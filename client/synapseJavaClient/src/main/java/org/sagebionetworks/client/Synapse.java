@@ -62,16 +62,17 @@ import org.sagebionetworks.repo.model.UserProfile;
 import org.sagebionetworks.repo.model.UserSessionData;
 import org.sagebionetworks.repo.model.VariableContentPaginatedResults;
 import org.sagebionetworks.repo.model.VersionInfo;
+import org.sagebionetworks.repo.model.Versionable;
 import org.sagebionetworks.repo.model.attachment.AttachmentData;
 import org.sagebionetworks.repo.model.attachment.PresignedUrl;
 import org.sagebionetworks.repo.model.attachment.S3AttachmentToken;
 import org.sagebionetworks.repo.model.attachment.URLStatus;
 import org.sagebionetworks.repo.model.auth.UserEntityPermissions;
+import org.sagebionetworks.repo.model.provenance.Activity;
 import org.sagebionetworks.repo.model.search.SearchResults;
 import org.sagebionetworks.repo.model.search.query.SearchQuery;
 import org.sagebionetworks.repo.model.status.StackStatus;
 import org.sagebionetworks.repo.model.versionInfo.SynapseVersionInfo;
-import org.sagebionetworks.schema.adapter.JSONArrayAdapter;
 import org.sagebionetworks.schema.adapter.JSONEntity;
 import org.sagebionetworks.schema.adapter.JSONObjectAdapter;
 import org.sagebionetworks.schema.adapter.JSONObjectAdapterException;
@@ -80,12 +81,13 @@ import org.sagebionetworks.schema.adapter.org.json.JSONObjectAdapterImpl;
 import org.sagebionetworks.securitytools.HMACUtils;
 import org.sagebionetworks.utils.HttpClientHelperException;
 import org.sagebionetworks.utils.MD5ChecksumHelper;
-import org.sagebionetworks.repo.model.ServiceConstants;
 
 /**
  * Low-level Java Client API for Synapse REST APIs
  */
 public class Synapse {
+
+	private static final String PARAM_ETAG = "ETag";
 
 	protected static final Logger log = Logger.getLogger(Synapse.class.getName());
 
@@ -97,6 +99,7 @@ public class Synapse {
 	protected static final String PROFILE_RESPONSE_OBJECT_HEADER = "profile_response_object";
 
 	protected static final String PASSWORD_FIELD = "password";
+	protected static final String PARAM_GENERATED_BY = "generatedBy";
 	
 	protected static final String QUERY_URI = "/query?query=";
 	protected static final String REPO_SUFFIX_PATH = "/path";	
@@ -107,6 +110,7 @@ public class Synapse {
 	protected static final String ENTITY = "/entity";
 	protected static final String ATTACHMENT_S3_TOKEN = "/s3AttachmentToken";
 	protected static final String ATTACHMENT_URL = "/attachmentUrl";
+	protected static final String GENERATED_BY_SUFFIX = "/generatedBy";
 
 	protected static final String ENTITY_URI_PATH = "/entity";
 	protected static final String ENTITY_ACL_PATH_SUFFIX = "/acl";
@@ -114,6 +118,7 @@ public class Synapse {
 	protected static final String ENTITY_BUNDLE_PATH = "/bundle?mask=";
 	protected static final String BUNDLE = "/bundle";
 	protected static final String BENEFACTOR = "/benefactor"; // from org.sagebionetworks.repo.web.UrlHelpers
+	protected static final String ACTIVITY_URI_PATH = "/entity";
 
 	protected static final String USER_PROFILE_PATH = "/userProfile";
 	
@@ -395,9 +400,9 @@ public class Synapse {
 	 * @return the newly created entity
 	 * @throws SynapseException
 	 */
-	public JSONObject createEntity(String uri, JSONObject entity)
+	public JSONObject createJSONObject(String uri, JSONObject entity, Map<String,String> params)
 			throws SynapseException {
-		return createSynapseEntity(repoEndpoint, uri, entity);
+		return createJSONObjectEntity(repoEndpoint, uri, entity, params);
 	}
 
 	/**
@@ -410,11 +415,7 @@ public class Synapse {
 	 */
 	public <T extends Entity> T createEntity(T entity)
 			throws SynapseException {
-		if (entity == null)
-			throw new IllegalArgumentException("Entity cannot be null");
-		entity.setEntityType(entity.getClass().getName());
-		// Look up the EntityType for this entity.		
-		return createEntity(ENTITY_URI_PATH, entity);
+		return createEntity(entity, null);
 	}
 
 	/**
@@ -422,11 +423,32 @@ public class Synapse {
 	 * 
 	 * @param <T>
 	 * @param entity
+	 * @param activityId set generatedBy relationship to the new entity
+	 * @return the newly created entity
+	 * @throws SynapseException
+	 */
+	public <T extends Entity> T createEntity(T entity, String activityId)
+			throws SynapseException {
+		if (entity == null)
+			throw new IllegalArgumentException("Entity cannot be null");
+		entity.setEntityType(entity.getClass().getName());
+		Map<String, String> params = new HashMap<String, String>();
+		if(activityId != null) params.put(PARAM_GENERATED_BY, activityId);
+		// Look up the EntityType for this entity.		
+		return createJSONEntity(ENTITY_URI_PATH, entity, params);
+	}
+
+	/**
+	 * Create a new Entity.
+	 * 
+	 * @param <T>
+	 * @param entity
+	 * @param params parameters to add to the request
 	 * @return the newly created entity
 	 * @throws SynapseException
 	 */
 	@SuppressWarnings("unchecked")
-	public <T extends JSONEntity> T createEntity(String uri, T entity)
+	public <T extends JSONEntity> T createJSONEntity(String uri, T entity, Map<String,String> params)
 			throws SynapseException {
 		if (entity == null)
 			throw new IllegalArgumentException("Entity cannot be null");		
@@ -435,7 +457,7 @@ public class Synapse {
 		try {
 			jsonObject = EntityFactory.createJSONObjectForEntity(entity);
 			// Create the entity
-			jsonObject = createEntity(uri, jsonObject);
+			jsonObject = createJSONObject(uri, jsonObject, params);
 			// Now convert to Object to an entity
 			return (T) EntityFactory.createEntityFromJSONObject(jsonObject,
 					entity.getClass());
@@ -452,15 +474,29 @@ public class Synapse {
 	 * @throws SynapseException
 	 */
 	public EntityBundle createEntityBundle(EntityBundleCreate ebc) throws SynapseException {
+		return createEntityBundle(ebc, null);
+	}
+	
+	/**
+	 * Create an Entity, Annotations, and ACL with a single call.
+	 * 
+	 * @param ebc
+	 * @param activityId the activity to create a generatedBy relationship with the entity in the Bundle. 
+	 * @return
+	 * @throws SynapseException
+	 */
+	public EntityBundle createEntityBundle(EntityBundleCreate ebc, String activityId) throws SynapseException {
 		if (ebc == null)
 			throw new IllegalArgumentException("EntityBundle cannot be null");
 		String url = ENTITY_URI_PATH + BUNDLE;
 		JSONObject jsonObject;
+		Map<String,String> params = new HashMap<String, String>();
+		if(activityId != null) params.put(PARAM_GENERATED_BY, activityId);
 		try {
 			// Convert to JSON
 			jsonObject = EntityFactory.createJSONObjectForEntity(ebc);
 			// Create
-			jsonObject = createEntity(url, jsonObject);
+			jsonObject = createJSONObject(url, jsonObject, params);
 			// Convert returned JSON to EntityBundle
 			return EntityFactory.createEntityFromJSONObject(jsonObject,	EntityBundle.class);
 		} catch (JSONObjectAdapterException e) {
@@ -476,6 +512,18 @@ public class Synapse {
 	 * @throws SynapseException
 	 */
 	public EntityBundle updateEntityBundle(String entityId, EntityBundleCreate ebc) throws SynapseException {
+		return updateEntityBundle(entityId, ebc, null);
+	}
+
+	/**
+	 * Update an Entity, Annotations, and ACL with a single call.
+	 * 
+	 * @param ebc
+	 * @param activityId the activity to create a generatedBy relationship with the entity in the Bundle.
+	 * @return
+	 * @throws SynapseException
+	 */
+	public EntityBundle updateEntityBundle(String entityId, EntityBundleCreate ebc, String activityId) throws SynapseException {
 		if (ebc == null)
 			throw new IllegalArgumentException("EntityBundle cannot be null");
 		String url = ENTITY_URI_PATH + "/" + entityId + BUNDLE;
@@ -487,7 +535,7 @@ public class Synapse {
 			// Update. Bundles do not have their own etags, so we use an
 			// empty requestHeaders object.
 			Map<String, String> requestHeaders = new HashMap<String, String>();
-			jsonObject = putSynapseEntity(repoEndpoint, url, jsonObject, requestHeaders);
+			jsonObject = putJSONObject(repoEndpoint, url, jsonObject, requestHeaders);
 			
 			// Convert returned JSON to EntityBundle
 			return EntityFactory.createEntityFromJSONObject(jsonObject,	EntityBundle.class);
@@ -660,7 +708,7 @@ public class Synapse {
 	public void updateMyProfile(UserProfile userProfile) throws SynapseException {
 		try {
 			String uri = USER_PROFILE_PATH;
-			putEntity(uri, EntityFactory.createJSONObjectForEntity(userProfile));
+			putJSONObject(uri, EntityFactory.createJSONObjectForEntity(userProfile), new HashMap<String,String>());
 		} catch (JSONObjectAdapterException e) {
 			throw new SynapseException(e);
 		}
@@ -716,7 +764,7 @@ public class Synapse {
 			uri += ENTITY_ACL_RECURSIVE_SUFFIX;
 		try {
 			JSONObject jsonAcl = EntityFactory.createJSONObjectForEntity(acl);
-			jsonAcl = putEntity(uri, jsonAcl);
+			jsonAcl = putJSONObject(uri, jsonAcl, new HashMap<String,String>());
 			return initializeFromJSONObject(jsonAcl, AccessControlList.class);
 		} catch (JSONObjectAdapterException e) {
 			throw new SynapseException(e);
@@ -725,7 +773,7 @@ public class Synapse {
 	
 	public void deleteACL(String entityId) throws SynapseException {
 		String uri = ENTITY_URI_PATH + "/" + entityId+ ENTITY_ACL_PATH_SUFFIX;
-		deleteEntity(uri);
+		deleteUri(uri);
 	}
 	
 	public AccessControlList createACL(AccessControlList acl) throws SynapseException {
@@ -733,7 +781,7 @@ public class Synapse {
 		String uri = ENTITY_URI_PATH + "/" + entityId+ ENTITY_ACL_PATH_SUFFIX;
 		try {
 			JSONObject jsonAcl = EntityFactory.createJSONObjectForEntity(acl);
-			jsonAcl = createEntity(uri, jsonAcl);
+			jsonAcl = createJSONObject(uri, jsonAcl, null);
 			return initializeFromJSONObject(jsonAcl, AccessControlList.class);
 		} catch (JSONObjectAdapterException e) {
 			throw new SynapseException(e);
@@ -838,7 +886,7 @@ public class Synapse {
 			String url = ENTITY_URI_PATH + "/" + entityId+"/annotations";
 			JSONObject jsonObject = EntityFactory.createJSONObjectForEntity(updated);
 			// Update
-			jsonObject = putEntity(url, jsonObject);
+			jsonObject = putJSONObject(url, jsonObject, new HashMap<String,String>());
 			// Parse the results
 			JSONObjectAdapter adapter = new JSONObjectAdapterImpl(jsonObject);
 			Annotations annos = new Annotations();
@@ -866,7 +914,7 @@ public class Synapse {
 		try {
 			jsonObject = EntityFactory.createJSONObjectForEntity(ar);
 			// Create the entity
-			jsonObject = createEntity(ACCESS_REQUIREMENT, jsonObject);
+			jsonObject = createJSONObject(ACCESS_REQUIREMENT, jsonObject, null);
 			// Now convert to Object to an entity
 			return (T)initializeFromJSONObject(jsonObject, getAccessRequirementClassFromType(ar.getEntityType()));
 		} catch (JSONObjectAdapterException e) {
@@ -918,7 +966,7 @@ public class Synapse {
 		try {
 			jsonObject = EntityFactory.createJSONObjectForEntity(aa);
 			// Create the entity
-			jsonObject = createEntity(ACCESS_APPROVAL, jsonObject);
+			jsonObject = createJSONObject(ACCESS_APPROVAL, jsonObject, null);
 			// Now convert to Object to an entity
 			return (T)initializeFromJSONObject(jsonObject, getAccessApprovalClassFromType(aa.getEntityType()));
 		} catch (JSONObjectAdapterException e) {
@@ -1004,13 +1052,30 @@ public class Synapse {
 	 */
 	@SuppressWarnings("unchecked")
 	public <T extends Entity> T putEntity(T entity) throws SynapseException {
+		return putEntity(entity, null);
+	}
+
+	/**
+	 * Update a dataset, layer, preview, annotations, etc...
+	 * 
+	 * @param <T> 
+	 * @param entity
+	 * @param activityId activity to create generatedBy conenction to
+	 * @return the updated entity
+	 * @throws SynapseException
+	 */
+	@SuppressWarnings("unchecked")
+	public <T extends Entity> T putEntity(T entity, String activityId) throws SynapseException {
 		if (entity == null)
 			throw new IllegalArgumentException("Entity cannot be null");
+		Map<String,String> params = new HashMap<String, String>();
+		if(activityId != null) params.put(PARAM_GENERATED_BY, activityId);
+		params.put(PARAM_ETAG, entity.getEtag()); 
 		try {
 			String uri = createEntityUri(ENTITY_URI_PATH, entity.getId());
 			JSONObject jsonObject;
 			jsonObject = EntityFactory.createJSONObjectForEntity(entity);
-			jsonObject = putEntity(uri, jsonObject);
+			jsonObject = putJSONObject(uri, jsonObject, params);
 			return (T) EntityFactory.createEntityFromJSONObject(jsonObject,
 					entity.getClass());
 		} catch (JSONObjectAdapterException e) {
@@ -1019,6 +1084,46 @@ public class Synapse {
 	}
 
 	/**
+	 * Create a new version of a given versionable Entity
+	 * @param <T>
+	 * @param entity
+	 * @param activityId
+	 * @return
+	 * @throws SynapseException
+	 */
+	public <T extends Versionable> T cereateNewEntityVersion(T entity) throws SynapseException {
+		return cereateNewEntityVersion(entity, null);
+	}
+	
+	/**
+	 * Create a new version of a given versionable Entity and create generatedBy connection to the given activity
+	 * @param <T>
+	 * @param entity
+	 * @param activityId
+	 * @return
+	 * @throws SynapseException
+	 */
+	@SuppressWarnings("unchecked")
+	public <T extends Versionable> T cereateNewEntityVersion(T entity, String activityId) throws SynapseException {
+		if (entity == null)
+			throw new IllegalArgumentException("Entity cannot be null");
+		Map<String,String> params = new HashMap<String, String>();
+		if(activityId != null) params.put(PARAM_GENERATED_BY, activityId);
+		params.put(PARAM_ETAG, entity.getEtag()); 
+		try {
+			String uri = createEntityUri(ENTITY_URI_PATH, entity.getId()) + REPO_SUFFIX_VERSION;
+			JSONObject jsonObject;
+			jsonObject = EntityFactory.createJSONObjectForEntity(entity);
+			jsonObject = putJSONObject(uri, jsonObject, params);
+			return (T) EntityFactory.createEntityFromJSONObject(jsonObject,
+					entity.getClass());
+		} catch (JSONObjectAdapterException e) {
+			throw new SynapseException(e);
+		}
+		
+	}
+	
+	/**
 	 * Update a dataset, layer, preview, annotations, etc...
 	 * 
 	 * @param uri
@@ -1026,9 +1131,9 @@ public class Synapse {
 	 * @return the updated entity
 	 * @throws SynapseException
 	 */
-	public JSONObject putEntity(String uri, JSONObject entity)
+	public JSONObject putJSONObject(String uri, JSONObject entity, Map<String,String> params)
 			throws SynapseException {
-		return putSynapseEntity(repoEndpoint, uri, entity);
+		return putJSONObject(repoEndpoint, uri, entity, params);
 	}
 
 	/**
@@ -1037,8 +1142,8 @@ public class Synapse {
 	 * @param uri
 	 * @throws SynapseException
 	 */
-	public void deleteEntity(String uri) throws SynapseException {
-		deleteSynapseEntity(repoEndpoint, uri);
+	public void deleteUri(String uri) throws SynapseException {
+		deleteUri(repoEndpoint, uri);
 		return;
 	}
 
@@ -1054,7 +1159,7 @@ public class Synapse {
 		if (entity == null)
 			throw new IllegalArgumentException("Entity cannot be null");
 		String uri = createEntityUri(ENTITY_URI_PATH, entity.getId());
-		deleteEntity(uri);
+		deleteUri(uri);
 	}
 
 	/**
@@ -1069,7 +1174,7 @@ public class Synapse {
 		if (entityId == null)
 			throw new IllegalArgumentException("entityId cannot be null");
 		String uri = createEntityUri(ENTITY_URI_PATH, entityId);
-		deleteEntity(uri);
+		deleteUri(uri);
 	}
 
 	/**
@@ -1297,7 +1402,7 @@ public class Synapse {
 		S3Token s3Token = new S3Token();
 		s3Token.setPath(dataFile.getName());
 		s3Token.setMd5(md5);
-		s3Token = createEntity(locationable.getS3Token(), s3Token);
+		s3Token = createJSONEntity(locationable.getS3Token(), s3Token, null);
 
 		// Step 2: perform the upload
 		dataUploader.uploadDataMultiPart(s3Token, dataFile);
@@ -1466,7 +1571,7 @@ public class Synapse {
 		PresignedUrl preIn = new PresignedUrl();
 		preIn.setTokenID(tokenOrPreviewId);
 		JSONObject jsonBody = EntityFactory.createJSONObjectForEntity(preIn);
-		JSONObject json = createEntity(url, jsonBody);
+		JSONObject json = createJSONObject(url, jsonBody, null);
 		return EntityFactory.createEntityFromJSONObject(json, PresignedUrl.class);
 	}
 	
@@ -1628,7 +1733,7 @@ public class Synapse {
 		if(token == null) throw new IllegalArgumentException("S3AttachmentToken cannot be null");
 		JSONObject jsonObject = EntityFactory.createJSONObjectForEntity(token);
 		String uri = getAttachmentTypeURL(attachmentType)+"/"+id+ATTACHMENT_S3_TOKEN;
-		jsonObject = createEntity(uri, jsonObject);
+		jsonObject = createJSONObject(uri, jsonObject, null);
 		return EntityFactory.createEntityFromJSONObject(jsonObject, S3AttachmentToken.class);
 	}
 
@@ -1644,7 +1749,7 @@ public class Synapse {
 	 */
 	public JSONObject createAuthEntity(String uri, JSONObject entity)
 			throws SynapseException {
-		return createSynapseEntity(authEndpoint, uri, entity);
+		return createJSONObjectEntity(authEndpoint, uri, entity, null);
 	}
 
 	public JSONObject getAuthEntity(String uri)
@@ -1665,7 +1770,7 @@ public class Synapse {
 		}
 
 		Map<String, String> requestHeaders = new HashMap<String, String>();
-		return putSynapseEntity(authEndpoint, uri, entity, requestHeaders);
+		return putJSONObject(authEndpoint, uri, entity, requestHeaders);
 	}
 
 	/******************** Low Level APIs ********************/
@@ -1679,8 +1784,8 @@ public class Synapse {
 	 * @return the newly created entity
 	 * @throws SynapseException
 	 */
-	public JSONObject createSynapseEntity(String endpoint, String uri,
-			JSONObject entity) throws SynapseException {
+	public JSONObject createJSONObjectEntity(String endpoint, String uri,
+			JSONObject entity, Map<String,String> params) throws SynapseException {
 		if (null == endpoint) {
 			throw new IllegalArgumentException("must provide endpoint");
 		}
@@ -1690,9 +1795,12 @@ public class Synapse {
 		if (null == entity) {
 			throw new IllegalArgumentException("must provide entity");
 		}
+		Map<String,String> headers = new HashMap<String, String>();
+		if(defaultPOSTPUTHeaders != null) headers.putAll(defaultPOSTPUTHeaders);
+		if(params != null) headers.putAll(params);
 
 		return signAndDispatchSynapseRequest(endpoint, uri, "POST", entity.toString(),
-				defaultPOSTPUTHeaders);
+				headers);
 	}
 
 	/**
@@ -1733,6 +1841,7 @@ public class Synapse {
 	 * @throws SynapseException
 	 */
 	@SuppressWarnings("unchecked")
+	@Deprecated
 	public JSONObject updateSynapseEntity(String endpoint, String uri,
 			JSONObject entity) throws SynapseException {
 
@@ -1759,7 +1868,7 @@ public class Synapse {
 					storedEntity.put(key, entity.get(key));
 				}
 			}
-			return putSynapseEntity(endpoint, uri, storedEntity);
+			return putJSONObject(endpoint, uri, storedEntity, new HashMap<String,String>());
 		} catch (JSONException e) {
 			throw new SynapseException(e);
 		}
@@ -1774,9 +1883,8 @@ public class Synapse {
 	 * @return the updated entity
 	 * @throws SynapseException
 	 */
-	public JSONObject putSynapseEntity(String endpoint, String uri,
-			JSONObject entity) throws SynapseException {
-		try {
+	public JSONObject putJSONObject(String endpoint, String uri,
+			JSONObject entity, Map<String,String> headers) throws SynapseException {
 			if (null == endpoint) {
 				throw new IllegalArgumentException("must provide endpoint");
 			}
@@ -1788,61 +1896,22 @@ public class Synapse {
 			}
 
 			Map<String, String> requestHeaders = new HashMap<String, String>();
-			requestHeaders.put("ETag", entity.getString("etag"));
-
-			return putSynapseEntity(endpoint, uri, entity, requestHeaders);
-		} catch (JSONException e) {
-			throw new SynapseException(e);
-		}
-	}
-
-	/**
-	 * Update a dataset, layer, preview, annotations, etc...
-	 * 
-	 * @param endpoint
-	 * @param uri
-	 * @param entity
-	 * @return the updated entity
-	 * @throws SynapseException
-	 */
-	public JSONObject putSynapseEntity(String endpoint, String uri,
-			JSONObject entity, Map<String,String> headers) throws SynapseException {
-			if (null == endpoint) {
-				throw new IllegalArgumentException("must provide endpoint");
-			}
-			if (null == uri) {
-				throw new IllegalArgumentException("must provide uri");
-			}
-			if (null == entity) {
-				throw new IllegalArgumentException("must provide entity");
-			}
-			if (null == headers) {
-				throw new IllegalArgumentException("must provide headers");
-			}
-				
-
-			Map<String, String> requestHeaders = new HashMap<String, String>(headers);
+			if(headers != null) requestHeaders.putAll(headers);
 			requestHeaders.putAll(defaultPOSTPUTHeaders);
 			return signAndDispatchSynapseRequest(endpoint, uri, "PUT", 
 					entity.toString(), requestHeaders);
 	}
 
 	/**
-	 * Delete a dataset, layer, etc..
+	 * Call Delete on any URI
 	 * 
 	 * @param endpoint
 	 * @param uri
 	 * @throws SynapseException
 	 */
-	public void deleteSynapseEntity(String endpoint, String uri)
-			throws SynapseException {
-		if (null == uri) {
-			throw new IllegalArgumentException("must provide uri");
-		}
-
-		signAndDispatchSynapseRequest(endpoint, uri, "DELETE", null,
-				defaultGETDELETEHeaders);
-		return;
+	public void deleteUri(String endpoint, String uri) throws SynapseException {
+		if (null == uri) throw new IllegalArgumentException("must provide uri");		
+		signAndDispatchSynapseRequest(endpoint, uri, "DELETE", null, defaultGETDELETEHeaders);
 	}
 
 	/**
@@ -2161,5 +2230,125 @@ public class Synapse {
 		return EntityFactory
 				.createEntityFromJSONObject(json, SynapseVersionInfo.class);
 	}
+	
+	/**
+	 * Get the activity generatedBy an Entity
+	 * @param entityId
+	 * @return
+	 * @throws SynapseException
+	 */
+	public Activity getActivityForEntity(String entityId) throws SynapseException {
+		return getActivityForEntityVersion(entityId, null);
+	}
 
+	/**
+	 * Get the activity generatedBy an Entity
+	 * @param entityId
+	 * @param versionNumber
+	 * @return
+	 * @throws SynapseException
+	 */
+	public Activity getActivityForEntityVersion(String entityId, Long versionNumber) throws SynapseException {
+		if (entityId == null)
+			throw new IllegalArgumentException("EntityId cannot be null");
+		String url = createEntityUri(ENTITY_URI_PATH, entityId);
+		if(versionNumber != null) {
+			url += REPO_SUFFIX_VERSION + "/" + versionNumber;
+		}
+		url += GENERATED_BY_SUFFIX;
+		JSONObject jsonObj = getEntity(url);
+		JSONObjectAdapter adapter = new JSONObjectAdapterImpl(jsonObj);
+		try {
+			return new Activity(adapter);
+		} catch (JSONObjectAdapterException e1) {
+			throw new RuntimeException(e1);
+		}
+	}
+
+	/**
+	 * Set the activity generatedBy an Entity
+	 * @param entityId
+	 * @param activityId
+	 * @return
+	 * @throws SynapseException
+	 */
+	public Activity setActivityForEntity(String entityId, String activityId) throws SynapseException {
+		if (entityId == null) throw new IllegalArgumentException("Entity id cannot be null");
+		if (activityId == null) throw new IllegalArgumentException("Activity id cannot be null");
+		Map<String,String> params = new HashMap<String, String>();
+		params.put(PARAM_GENERATED_BY, activityId);				
+		String url = createEntityUri(ENTITY_URI_PATH, entityId) + GENERATED_BY_SUFFIX;
+		try {
+			JSONObject jsonObject = new JSONObject(); // no need for a body
+			jsonObject = putJSONObject(url, jsonObject, params);
+			JSONObjectAdapter adapter = new JSONObjectAdapterImpl(jsonObject);
+			return new Activity(adapter);
+		} catch (JSONObjectAdapterException e) {
+			throw new SynapseException(e);
+		}
+	}
+
+	/**
+	 * Delete the generatedBy relationship for an Entity (does not delete the activity)
+	 * @param entityId
+	 * @throws SynapseException
+	 */
+	public void deleteGeneratedByForEntity(String entityId) throws SynapseException {
+		if (entityId == null) throw new IllegalArgumentException("Entity id cannot be null");
+		String uri = createEntityUri(ENTITY_URI_PATH, entityId) + GENERATED_BY_SUFFIX;
+		deleteUri(uri);
+	}
+
+	/**
+	 * Get activity by id
+	 * @param activityId
+	 * @return
+	 * @throws SynapseException
+	 */
+	public Activity getActivity(String activityId) throws SynapseException {
+		if (activityId == null) throw new IllegalArgumentException("Activity id cannot be null");
+		String url = createEntityUri(ACTIVITY_URI_PATH, activityId);		
+		JSONObject jsonObj = getEntity(url);
+		JSONObjectAdapter adapter = new JSONObjectAdapterImpl(jsonObj);
+		try {
+			return new Activity(adapter);
+		} catch (JSONObjectAdapterException e1) {
+			throw new RuntimeException(e1);
+		}
+	}
+
+	/**
+	 * Update an activity
+	 * @param activity
+	 * @return
+	 * @throws SynapseException
+	 */
+	public Activity putActivity(Activity activity) throws SynapseException {
+		if (activity == null) throw new IllegalArgumentException("Activity can not be null");
+		String url = createEntityUri(ACTIVITY_URI_PATH, activity.getId());		
+		JSONObjectAdapter toUpdateAdapter = new JSONObjectAdapterImpl();
+		JSONObject obj;
+		try {
+			obj = new JSONObject(activity.writeToJSONObject(toUpdateAdapter).toJSONString());
+			JSONObject jsonObj = putJSONObject(url, obj, new HashMap<String,String>());
+			JSONObjectAdapter adapter = new JSONObjectAdapterImpl(jsonObj);
+			return new Activity(adapter);
+		} catch (JSONException e1) {
+			throw new RuntimeException(e1);
+		} catch (JSONObjectAdapterException e1) {
+			throw new RuntimeException(e1);
+		}
+	}
+
+	/**
+	 * Delete an activity. This will remove all generatedBy connections to this activity as well.
+	 * @param activityId
+	 * @throws SynapseException
+	 */
+	public void deleteActivity(String activityId) throws SynapseException {
+		if (activityId == null) throw new IllegalArgumentException("Activity id cannot be null");
+		String uri = createEntityUri(ACTIVITY_URI_PATH, activityId);
+		deleteUri(uri);
+	}
+	
 }
