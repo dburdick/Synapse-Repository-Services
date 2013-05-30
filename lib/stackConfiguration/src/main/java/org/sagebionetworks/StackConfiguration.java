@@ -805,4 +805,12 @@ public class StackConfiguration {
 	public Integer getMigrationMaxAllowedPacketBytes(){
 		return Integer.parseInt(configuration.getProperty("org.sagebionetworks.repo.model.dbo.migration.max.allowed.packet.byte"));
 	}
+
+	/**
+	 * MailChimp API key
+	 */
+	public static String getMailChimpAPIKey() {
+		return configuration.getProperty("org.sagebionetworks.mailchimp.apikey");
+	}
+
 }
